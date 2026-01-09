@@ -4,7 +4,7 @@
 # 
 # Generates: final_output.txt with all primers in tabular format
 
-set -e
+# Note: set -e removed to allow processing all positions even if some fail
 set -u
 
 # Parameters
@@ -17,6 +17,7 @@ REGION_FILE=""
 OUTPUT_PREFIX=""
 FLANK_LENGTH=250
 SKIP_ISPCR=false
+MIN_INDEL_SIZE=10
 
 # Primer3 parameters
 PRIMER_OPT_SIZE=20
@@ -46,22 +47,31 @@ usage() {
     cat << EOF
 Usage: $0 [OPTIONS]
 
-MODE 1: VCF + Region
-  -v FILE     VCF file
+MODE 1: VCF + Region (INDEL Filtering)
+  -v FILE     VCF file (filters for INDELs > ${MIN_INDEL_SIZE}bp)
   -r FILE     Reference genome FASTA
   -c CHR      Chromosome
   -s INT      Start position
   -e INT      End position
   -o PREFIX   Output prefix
+  
+  This mode filters VCF for large INDELs, generates a position file,
+  then designs generic primers around those positions.
 
-MODE 2: Region file
+MODE 2: Position file
   -r FILE     Reference genome FASTA
-  -f FILE     Region file (chr pos [ref alt])
+  -f FILE     Position file (chr pos [ref alt])
+              Note: ref/alt columns are optional and used only for reference
   -o PREFIX   Output prefix
 
 Optional:
-  -l INT      Flanking length [default: 250]
-  --no-ispcr  Skip isPCR validation
+  -l INT              Flanking length [default: 250]
+  --min-indel-size INT  Minimum INDEL size for VCF filtering [default: 10]
+  --no-ispcr          Skip isPCR validation
+
+IMPORTANT: For large INDELs (e.g., 70bp deletions), increase flanking length
+           and product size to ensure primers don't fall in deleted regions.
+           Example: -l 300 --product-size-max 500
 
 Primer3 Parameters:
   --primer-size-min INT       [default: 18]
@@ -92,6 +102,7 @@ while [[ $# -gt 0 ]]; do
         -o) OUTPUT_PREFIX="$2"; shift 2 ;;
         -l) FLANK_LENGTH="$2"; shift 2 ;;
         --no-ispcr) SKIP_ISPCR=true; shift ;;
+        --min-indel-size) MIN_INDEL_SIZE="$2"; shift 2 ;;
         --primer-size-min) PRIMER_MIN_SIZE="$2"; shift 2 ;;
         --primer-size-opt) PRIMER_OPT_SIZE="$2"; shift 2 ;;
         --primer-size-max) PRIMER_MAX_SIZE="$2"; shift 2 ;;
@@ -139,6 +150,7 @@ fi
 # Create work directory
 WORK_DIR="${OUTPUT_PREFIX}_results"
 mkdir -p "$WORK_DIR"
+print_info "Work directory created: ${WORK_DIR}"
 
 # Index FASTA
 if [[ ! -f "${REF_FASTA}.fai" ]]; then
@@ -147,47 +159,37 @@ if [[ ! -f "${REF_FASTA}.fai" ]]; then
 fi
 
 # Initialize output file
-OUTPUT_FILE="${OUTPUT_PREFIX}_final_output.txt"
+OUTPUT_FILE="${OUTPUT_PREFIX}.txt"
 echo -e "Primer_name\tChr\tPosition\tStart\tEnd\tType\tSequence\tLength\tTm\tGC_Percent\tAmplicon_Size\tOff_Target" > "$OUTPUT_FILE"
 
-# Function to process variant and write to output
-process_variant() {
+# Function to design primers around a position (no variant)
+process_position() {
     local chr=$1
     local pos=$2
-    local ref=$3
-    local alt=$4
-    local var_id=$5
+    local var_id=$3
     
-    # Determine variant type
-    local var_type
-    if [[ ${#ref} -eq 1 ]] && [[ ${#alt} -eq 1 ]]; then
-        var_type="SNP"
-    else
-        var_type="INDEL"
-    fi
-    
-    # Extract sequence
+    # Extract sequence around the position
     local extract_start=$((pos - FLANK_LENGTH))
-    local extract_end=$((pos + ${#ref} + FLANK_LENGTH - 1))
+    local extract_end=$((pos + FLANK_LENGTH))
     [[ $extract_start -lt 1 ]] && extract_start=1
     
     local region="${chr}:${extract_start}-${extract_end}"
     samtools faidx "$REF_FASTA" "$region" > "${WORK_DIR}/seq.fa" 2>/dev/null
     
+    if [[ ! -s "${WORK_DIR}/seq.fa" ]]; then
+        return 1
+    fi
+    
     local full_seq=$(grep -v "^>" "${WORK_DIR}/seq.fa" | tr -d '\n' | tr '[:lower:]' '[:upper:]')
+    
+    # Calculate target position in the extracted sequence (1bp at the center)
     local var_pos_in_seq=$((pos - extract_start))
-    local upstream=${full_seq:0:$var_pos_in_seq}
-    local downstream=${full_seq:$((var_pos_in_seq + ${#ref}))}
     
-    # Primer3 input
-    local primer3_seq="${upstream}${ref}${downstream}"
-    local target_start=${#upstream}
-    local target_len=${#ref}
-    
-    cat > "${WORK_DIR}/p3_input.txt" << EOF
+    # Primer3 input - target is 1bp at the specified position
+    cat > "${WORK_DIR}/p3_input.txt" <<EOF
 SEQUENCE_ID=${var_id}
-SEQUENCE_TEMPLATE=${primer3_seq}
-SEQUENCE_TARGET=${target_start},${target_len}
+SEQUENCE_TEMPLATE=${full_seq}
+SEQUENCE_TARGET=${var_pos_in_seq},1
 PRIMER_TASK=generic
 PRIMER_PICK_LEFT_PRIMER=1
 PRIMER_PICK_INTERNAL_OLIGO=0
@@ -219,9 +221,7 @@ EOF
     for i in $(seq 0 $((num_primers - 1))); do
         local left_seq=$(grep "PRIMER_LEFT_${i}_SEQUENCE=" "${WORK_DIR}/p3_output.txt" | cut -d'=' -f2)
         local right_seq=$(grep "PRIMER_RIGHT_${i}_SEQUENCE=" "${WORK_DIR}/p3_output.txt" | cut -d'=' -f2)
-        local left_start=$(grep "PRIMER_LEFT_${i}=" "${WORK_DIR}/p3_output.txt" | head -1 | cut -d'=' -f2 | cut -d',' -f1)
         local left_len=$(grep "PRIMER_LEFT_${i}=" "${WORK_DIR}/p3_output.txt" | head -1 | cut -d'=' -f2 | cut -d',' -f2)
-        local right_start=$(grep "PRIMER_RIGHT_${i}=" "${WORK_DIR}/p3_output.txt" | head -1 | cut -d'=' -f2 | cut -d',' -f1)
         local right_len=$(grep "PRIMER_RIGHT_${i}=" "${WORK_DIR}/p3_output.txt" | head -1 | cut -d'=' -f2 | cut -d',' -f2)
         local left_tm=$(grep "PRIMER_LEFT_${i}_TM=" "${WORK_DIR}/p3_output.txt" | cut -d'=' -f2)
         local right_tm=$(grep "PRIMER_RIGHT_${i}_TM=" "${WORK_DIR}/p3_output.txt" | cut -d'=' -f2)
@@ -247,10 +247,9 @@ EOF
                     off_target="true"
                 fi
                 
-                # Get first hit coordinates - try multiple formats
+                # Get first hit coordinates
                 local first_hit=$(grep "^>" "${WORK_DIR}/ispcr_output.txt" | head -1)
                 if [[ -n "$first_hit" ]]; then
-                    # Format: >primer chr:start+end or chr:start-end
                     if [[ "$first_hit" =~ :([0-9]+)[+]([0-9]+) ]]; then
                         ispcr_start="${BASH_REMATCH[1]}"
                         ispcr_end="${BASH_REMATCH[2]}"
@@ -262,15 +261,10 @@ EOF
             fi
         fi
         
-        # Primer name with variant type
-        local primer_name
-        if [[ ${#ref} -eq 1 ]] && [[ ${#alt} -eq 1 ]]; then
-            primer_name="kasp_${chr}_${pos}_${i}"
-        else
-            primer_name="indel_${chr}_${pos}_${i}"
-        fi
+        # Primer name
+        local primer_name="primer_${chr}_${pos}_${i}"
         
-        # Write forward primer (removed Primer_Start column)
+        # Write forward primer
         echo -e "${primer_name}\t${chr}\t${pos}\t${ispcr_start}\t${ispcr_end}\tForward Primer\t${left_seq}\t${left_len}\t${left_tm}\t${left_gc}\t${product_size}\t${off_target}" >> "$OUTPUT_FILE"
         
         # Write reverse primer
@@ -280,63 +274,111 @@ EOF
     return 0
 }
 
-# MODE 1: VCF + Region
+
+# MODE 1: VCF + Region (INDEL Filtering)
 if [[ "$MODE" == "VCF_REGION" ]]; then
     print_info "Processing VCF region: ${CHROM}:${START_POS}-${END_POS}"
+    print_info "Filtering for INDELs > ${MIN_INDEL_SIZE}bp"
     
+    # Extract variants from region
     grep -v "^#" "$VCF_FILE" | awk -v chr="$CHROM" -v start="$START_POS" -v end="$END_POS" \
         '$1==chr && $2>=start && $2<=end' > "${WORK_DIR}/variants.txt"
     
     VARIANT_COUNT=$(wc -l < "${WORK_DIR}/variants.txt")
-    print_info "Found ${VARIANT_COUNT} variants"
+    print_info "Found ${VARIANT_COUNT} total variants in region"
     
-    PROCESSED=0
+    # Generate position file with INDEL filtering
+    POSITION_FILE="${WORK_DIR}/positions.txt"
+    echo -e "#chr\tpos\tref\talt\tindel_size" > "$POSITION_FILE"
+    
+    INDEL_COUNT=0
+    SNP_COUNT=0
+    SMALL_INDEL_COUNT=0
+    
     while IFS=$'\t' read -r chr pos id ref alt rest; do
+        # Take first ALT allele
         alt=$(echo "$alt" | cut -d',' -f1)
-        [[ ${#ref} -gt 50 ]] || [[ ${#alt} -gt 50 ]] && continue
         
-        if process_variant "$chr" "$pos" "$ref" "$alt" "$id"; then
-            ((PROCESSED++))
-            print_info "  Processed ${id} (${PROCESSED}/${VARIANT_COUNT})"
+        # Skip very large variants (likely structural variants or errors)
+        [[ ${#ref} -gt 1000 ]] || [[ ${#alt} -gt 1000 ]] && continue
+        
+        # Calculate INDEL size
+        ref_len=${#ref}
+        alt_len=${#alt}
+        indel_size=$((ref_len > alt_len ? ref_len - alt_len : alt_len - ref_len))
+        
+        # Filter: Skip SNPs
+        if [[ $ref_len -eq 1 ]] && [[ $alt_len -eq 1 ]]; then
+            ((SNP_COUNT++))
+            continue
         fi
+        
+        # Filter: Skip small INDELs
+        if [[ $indel_size -le $MIN_INDEL_SIZE ]]; then
+            ((SMALL_INDEL_COUNT++))
+            continue
+        fi
+        
+        # This is a large INDEL - add to position file
+        echo -e "${chr}\t${pos}\t${ref}\t${alt}\t${indel_size}" >> "$POSITION_FILE"
+        ((INDEL_COUNT++))
     done < "${WORK_DIR}/variants.txt"
+    
+    print_info "Filtered results:"
+    print_info "  - SNPs skipped: ${SNP_COUNT}"
+    print_info "  - Small INDELs (<=${MIN_INDEL_SIZE}bp) skipped: ${SMALL_INDEL_COUNT}"
+    print_info "  - Large INDELs (>${MIN_INDEL_SIZE}bp) selected: ${INDEL_COUNT}"
+    print_info "Generated position file: ${POSITION_FILE}"
+    
+    if [[ $INDEL_COUNT -eq 0 ]]; then
+        print_warn "No INDELs >${MIN_INDEL_SIZE}bp found in region"
+        print_info "Complete! No primers designed."
+        exit 0
+    fi
+    
+    # Now process the generated position file
+    print_info "Designing generic primers for ${INDEL_COUNT} INDELs..."
+    PROCESSED=0
+    
+    while IFS=$'\t' read -r chr pos ref alt indel_size; do
+        # Skip header
+        [[ "$chr" =~ ^# ]] && continue
+        
+        var_id="primer_${chr}_${pos}"
+        if process_position "$chr" "$pos" "$var_id"; then
+            ((PROCESSED++))
+            print_info "  Processed ${chr}:${pos} (INDEL ${indel_size}bp) [${PROCESSED}/${INDEL_COUNT}]"
+        else
+            print_warn "  Could not design primers for ${chr}:${pos}"
+        fi
+    done < "$POSITION_FILE"
 fi
 
-# MODE 2: Region file
+# MODE 2: Position file
 if [[ "$MODE" == "REGION_FILE" ]]; then
-    print_info "Processing region file"
+    print_info "Processing position file: ${REGION_FILE}"
+    
+    # Convert Windows line endings to Unix (handle CRLF)
+    sed -i 's/\r$//' "$REGION_FILE" 2>/dev/null || true
     
     REGION_COUNT=$(grep -v "^$" "$REGION_FILE" | grep -v "^#" | wc -l)
+    print_info "Found ${REGION_COUNT} positions"
     PROCESSED=0
     
     while IFS=$'\t' read -r chr pos ref alt rest; do
+        # Skip empty lines and comments
         [[ -z "$chr" ]] && continue
         [[ "$chr" =~ ^# ]] && continue
         [[ -z "$pos" ]] && continue
         
-        # If ref and alt are provided, use them (KASP/variant-specific primers)
-        if [[ -n "$ref" ]] && [[ -n "$alt" ]]; then
-            var_id="${chr}_${pos}"
-            if process_variant "$chr" "$pos" "$ref" "$alt" "$var_id"; then
-                ((PROCESSED++))
-                print_info "  Processed ${chr}:${pos} with variant (${PROCESSED}/${REGION_COUNT})"
-            fi
-        # If only chr and pos are provided, design general primers
-        elif [[ -n "$chr" ]] && [[ -n "$pos" ]]; then
-            # Extract reference base at this position
-            local region="${chr}:${pos}-${pos}"
-            local ref_base=$(samtools faidx "$REF_FASTA" "$region" 2>/dev/null | grep -v "^>" | tr -d '\n' | tr '[:lower:]' '[:upper:]')
-            
-            if [[ -n "$ref_base" ]]; then
-                var_id="general_${chr}_${pos}"
-                # Use the reference base as both ref and alt for general primer design
-                if process_variant "$chr" "$pos" "$ref_base" "$ref_base" "$var_id"; then
-                    ((PROCESSED++))
-                    print_info "  Processed ${chr}:${pos} general primers (${PROCESSED}/${REGION_COUNT})"
-                fi
-            else
-                print_warn "  Could not extract reference at ${chr}:${pos}"
-            fi
+        # Design generic primers using only chr and pos
+        # ref and alt columns are ignored (used only for reference/documentation)
+        var_id="primer_${chr}_${pos}"
+        if process_position "$chr" "$pos" "$var_id"; then
+            ((PROCESSED++))
+            print_info "  Processed ${chr}:${pos} [${PROCESSED}/${REGION_COUNT}]"
+        else
+            print_warn "  Could not design primers for ${chr}:${pos}"
         fi
     done < "$REGION_FILE"
 fi

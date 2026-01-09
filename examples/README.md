@@ -1,67 +1,71 @@
-# Example Inputs and Outputs
+# Examples Directory
 
-This directory contains example input files and expected outputs to help you understand how the pipeline works.
+This directory contains example commands and test data for the primer design pipeline.
 
 ## Files
 
-### Input Files
+- **EXAMPLE_COMMANDS.md** - Ready-to-run commands for both scripts
+- **README.md** - This file
 
-1. **`example_regions.txt`** - Example region file showing both formats:
-   - General primers (chr + pos only)
-   - KASP primers (chr + pos + ref + alt)
+## Test Data (in parent directory)
 
-### Output Files
+- `test.vcf` - VCF file with test variants
+- `position.txt` - Position file for direct primer design  
+- `Oryza_sativa.chr1.fa` - Reference genome (rice chromosome 1)
 
-2. **`example_output.txt`** - Sample output from running the pipeline
-   - Shows the tabular format with all primer information
-   - Demonstrates both KASP and indel primer naming
-   - Includes isPCR validation results
+## Quick Start
 
-## Running the Examples
-
-### Example 1: VCF Mode
+### 1. Generic Primers (INDEL Design)
 
 ```bash
-cd ..
-bash design_primers.sh \
+# Basic INDEL filtering
+bash generic_primers.sh \
   -v test.vcf \
   -r Oryza_sativa.chr1.fa \
   -c 1 \
-  -s 40000 \
-  -e 50000 \
-  -o examples/vcf_example
+  -s 1 \
+  -e 50000000 \
+  -o example_indels
 ```
 
-### Example 2: Region File Mode
+### 2. KASP Primers (SNP Genotyping)
 
 ```bash
-cd ..
-bash design_primers.sh \
+# Basic KASP markers
+bash kasp_primers.sh \
+  -v test.vcf \
   -r Oryza_sativa.chr1.fa \
-  -f examples/example_regions.txt \
-  -o examples/region_example
+  -c 1 \
+  -s 1 \
+  -e 50000000 \
+  -o example_kasp
 ```
 
-## Understanding the Output
+## More Examples
 
-The output file (`example_output.txt`) contains:
+See [EXAMPLE_COMMANDS.md](EXAMPLE_COMMANDS.md) for comprehensive examples including:
+- INDEL filtering with custom parameters
+- Quality filtering for SNPs
+- Fluorophore tails for KASP
+- Position file usage
+- Custom Primer3 parameters
 
-- **Primer_name**: Unique identifier (e.g., `indel_1_41169_0`)
-- **Chr**: Chromosome number
-- **Position**: Variant position
-- **Start/End**: isPCR amplification coordinates
-- **Type**: Forward Primer / Reverse Primer
-- **Sequence**: Actual primer sequence
-- **Length**: Primer length in base pairs
-- **Tm**: Melting temperature
-- **GC_Percent**: GC content percentage
-- **Amplicon_Size**: Expected PCR product size
-- **Off_Target**: true/false (multiple amplification sites detected)
+## Expected Outputs
 
-## Expected Results
+### Generic Primers
+- `{prefix}.txt` - Primer results
+- `{prefix}_positions.txt` - Filtered INDEL positions
+- `{prefix}_results/` - Intermediate files
 
-After running the examples, you should see:
-- Main output file: `examples/vcf_example_final_output.txt`
-- Detailed results: `examples/vcf_example_results/`
+### KASP Primers
+- `{prefix}_kasp.txt` - KASP marker results (3 primers per SNP)
+- `{prefix}_kasp_results/` - Intermediate files including filtered SNPs
 
-Compare your output with `example_output.txt` to verify correct installation.
+## Cleanup
+
+Remove all example outputs:
+```bash
+rm -f example_*.txt
+rm -rf example_*_results/
+rm -rf example_*_kasp_results/
+```
