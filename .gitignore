@@ -1,0 +1,42 @@
+# Ignore test output files (except examples)
+*_final_output.txt
+*_results/
+*_temp/
+!examples/example_output.txt
+
+# Ignore large data files (keep examples)
+*.fa
+*.fai
+!Oryza_sativa.chr1.fa
+!Oryza_sativa.chr1.fa.fai
+
+# Ignore VCF files except test
+*.vcf
+*.vcf.gz
+*.vcf.idx
+!test.vcf
+
+# Ignore OS files
+.DS_Store
+Thumbs.db
+
+# Ignore editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Ignore Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Ignore logs
+*.log
+
+# Ignore temporary files
+tmp/
+temp/

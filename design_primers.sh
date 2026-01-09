@@ -312,12 +312,30 @@ if [[ "$MODE" == "REGION_FILE" ]]; then
     while IFS=$'\t' read -r chr pos ref alt rest; do
         [[ -z "$chr" ]] && continue
         [[ "$chr" =~ ^# ]] && continue
+        [[ -z "$pos" ]] && continue
         
+        # If ref and alt are provided, use them (KASP/variant-specific primers)
         if [[ -n "$ref" ]] && [[ -n "$alt" ]]; then
             var_id="${chr}_${pos}"
             if process_variant "$chr" "$pos" "$ref" "$alt" "$var_id"; then
                 ((PROCESSED++))
-                print_info "  Processed ${chr}:${pos} (${PROCESSED}/${REGION_COUNT})"
+                print_info "  Processed ${chr}:${pos} with variant (${PROCESSED}/${REGION_COUNT})"
+            fi
+        # If only chr and pos are provided, design general primers
+        elif [[ -n "$chr" ]] && [[ -n "$pos" ]]; then
+            # Extract reference base at this position
+            local region="${chr}:${pos}-${pos}"
+            local ref_base=$(samtools faidx "$REF_FASTA" "$region" 2>/dev/null | grep -v "^>" | tr -d '\n' | tr '[:lower:]' '[:upper:]')
+            
+            if [[ -n "$ref_base" ]]; then
+                var_id="general_${chr}_${pos}"
+                # Use the reference base as both ref and alt for general primer design
+                if process_variant "$chr" "$pos" "$ref_base" "$ref_base" "$var_id"; then
+                    ((PROCESSED++))
+                    print_info "  Processed ${chr}:${pos} general primers (${PROCESSED}/${REGION_COUNT})"
+                fi
+            else
+                print_warn "  Could not extract reference at ${chr}:${pos}"
             fi
         fi
     done < "$REGION_FILE"
