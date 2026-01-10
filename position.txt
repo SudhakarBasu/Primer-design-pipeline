@@ -7,6 +7,6 @@
 
 # Format 2: KASP primers (with variant information)
 # chr	pos	ref	alt
-1	862351	A	G
-1	962351	GT	G
-1	1062351	C	CT
+1	86235	A	G
+1	96235	GT	G
+1	10623	C	CT
